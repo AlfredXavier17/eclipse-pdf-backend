@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Payment Successful</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      background: #0d0f12;
+      color: #e7ebf1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      text-align: center;
+    }
+    h1 {
+      color: #5cc8ff;
+      font-size: 28px;
+      margin-bottom: 10px;
+    }
+    p {
+      color: #a5afbd;
+      font-size: 16px;
+      margin: 0 0 10px 0;
+    }
+    .note {
+      margin-top: 10px;
+      color: #89ffb6;
+      font-size: 15px;
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <h1>🎉 You’re now Premium!</h1>
+  <p>Thank you for subscribing to Eclipse PDF Premium.</p>
+  <div class="note">Restart the app to unlock all premium features 💎</div>
+
+  <script>
+    // tell local server to mark this device as premium
+    fetch("/mark-premium", { method: "POST" }).catch(() => {});
+    // optional local backup
+    localStorage.setItem("isPremium", "true");
+  </script>
+</body>
+</html>
