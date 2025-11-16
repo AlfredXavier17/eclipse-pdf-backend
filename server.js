@@ -32,8 +32,8 @@ app.post("/create-checkout-session", async (req, res) => {
           quantity: 1,
         },
       ],
-      success_url: "http://localhost:4242/success.html",
-      cancel_url: "http://localhost:4242/cancel.html",
+      success_url: "https://eclipse-pdf-backend.onrender.com/success.html",
+      cancel_url: "https://eclipse-pdf-backend.onrender.com/cancel.html",
     });
 
     res.json({ url: session.url });
