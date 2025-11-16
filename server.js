@@ -1,26 +1,45 @@
+// =============================================
+//  Eclipse PDF – FINAL CLEAN STRIPE BACKEND
+// =============================================
 const express = require("express");
 const Stripe = require("stripe");
 const cors = require("cors");
 const path = require("path");
 const fs = require("fs");
 const bodyParser = require("body-parser");
+require("dotenv").config();
 
 const app = express();
 
-// 🟢 YOUR REAL LIVE SECRET KEY
-require("dotenv").config();
+// Stripe client
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-// 📁 local premium file
-const premiumFile = path.join(__dirname, "../premium.json");
+// Where we store premium status on server
+const premiumFile = path.join(__dirname, "premium.json");
 
-// DO NOT USE express.json() — it breaks Stripe webhook raw-body
+// Make sure file exists
+if (!fs.existsSync(premiumFile)) {
+  fs.writeFileSync(
+    premiumFile,
+    JSON.stringify(
+      {
+        isPremium: false,
+        customerId: null,
+        subscriptionId: null,
+        lastPaid: null
+      },
+      null,
+      2
+    )
+  );
+}
+
 app.use(cors());
-app.use(express.static(path.join(__dirname, "web")));
+app.use(express.static(path.join(__dirname, "web"))); // serve success.html + cancel.html
 
-// =========================================
-// 🧨 CREATE CHECKOUT SESSION (LIVE SUBSCRIPTION)
-// =========================================
+// =====================================================
+// 🟦 CREATE CHECKOUT SESSION (TEST MODE)
+// =====================================================
 app.post("/create-checkout-session", async (req, res) => {
   try {
     const session = await stripe.checkout.sessions.create({
@@ -28,8 +47,7 @@ app.post("/create-checkout-session", async (req, res) => {
       payment_method_types: ["card"],
       line_items: [
         {
-          // price: "price_1ST9PrJ6zNG9KpDmFEZOcAjk", // LIVE price ID
-          price:  "price_1STxUHJP4n1rsrKWoGxeHeEc", /// test price id
+          price: process.env.STRIPE_PRICE_ID, // 💎 USE ENV VARIABLE
           quantity: 1,
         },
       ],
@@ -39,42 +57,43 @@ app.post("/create-checkout-session", async (req, res) => {
 
     res.json({ url: session.url });
   } catch (err) {
-    console.error("❌ Error creating checkout session:", err);
-    return res.status(500).json({ error: "Failed to create checkout session" });
+    console.error("❌ Checkout Error:", err.message);
+    res.status(500).json({ error: "Failed to create checkout session" });
   }
 });
 
-// =========================================
-// 💎 SET PREMIUM TRUE (called by success.html)
-// =========================================
+// =====================================================
+// 🟩 MARK PREMIUM (ONLY CALLED BY success.html)
+// =====================================================
 app.post("/mark-premium", (req, res) => {
   try {
-    fs.writeFileSync(
-      premiumFile,
-      JSON.stringify({ isPremium: true, at: Date.now() }, null, 2)
-    );
+    const data = JSON.parse(fs.readFileSync(premiumFile, "utf8"));
+    data.isPremium = true;
+    fs.writeFileSync(premiumFile, JSON.stringify(data, null, 2));
     res.json({ ok: true });
-  } catch (e) {
-    console.error("❌ Error writing premium.json:", e);
+  } catch (err) {
+    console.error("❌ mark-premium Error:", err.message);
     res.status(500).json({ ok: false });
   }
 });
 
-// =========================================
-// 📡 ENTITLEMENT CHECK
-// =========================================
+// =====================================================
+// 📡 ENTITLEMENT CHECK (Electron app checks this)
+// =====================================================
 app.get("/entitlement", (req, res) => {
   try {
     const data = JSON.parse(fs.readFileSync(premiumFile, "utf8"));
-    res.json({ isPremium: !!data.isPremium });
+    res.json({
+      isPremium: data.isPremium === true
+    });
   } catch {
     res.json({ isPremium: false });
   }
 });
 
-// =========================================
-// ⚡ STRIPE WEBHOOK (handles subscription events)
-// =========================================
+// =====================================================
+// ⚡ STRIPE WEBHOOK — SAVES CUSTOMER + SUBSCRIPTION
+// =====================================================
 app.post(
   "/webhook",
   bodyParser.raw({ type: "application/json" }),
@@ -84,54 +103,43 @@ app.post(
     let event;
     try {
       event = stripe.webhooks.constructEvent(
-      req.body,
-      sig,
-      process.env.STRIPE_WEBHOOK_SECRET
-    );
+        req.body,
+        sig,
+        process.env.STRIPE_WEBHOOK_SECRET
+      );
     } catch (err) {
-      console.error("❌ Webhook signature verification failed:", err.message);
+      console.error("❌ Webhook signature failed:", err.message);
       return res.status(400).send(`Webhook Error: ${err.message}`);
     }
 
-    // 🟢 Subscription paid (first month or renewal)
+    const data = JSON.parse(fs.readFileSync(premiumFile, "utf8"));
+
     if (event.type === "invoice.paid") {
-      console.log("💎 Subscription active / renewed");
-
       const invoice = event.data.object;
-      const customerId = invoice.customer;
-      const subscriptionId = invoice.subscription;
+      console.log("💎 Subscription payment successful");
 
-      fs.writeFileSync(
-        premiumFile,
-        JSON.stringify(
-          {
-            isPremium: true,
-            lastPaid: Date.now(),
-            customerId: customerId,
-            subscriptionId: subscriptionId
-          },
-          null,
-          2
-        )
-      );
+      data.isPremium = true;
+      data.customerId = invoice.customer;
+      data.subscriptionId = invoice.subscription;
+      data.lastPaid = Date.now();
+
+      fs.writeFileSync(premiumFile, JSON.stringify(data, null, 2));
     }
 
-    // 🔴 Subscription canceled
     if (event.type === "customer.subscription.deleted") {
       console.log("🟥 Subscription canceled");
-      fs.writeFileSync(
-        premiumFile,
-        JSON.stringify({ isPremium: false }, null, 2)
-      );
+
+      data.isPremium = false;
+      fs.writeFileSync(premiumFile, JSON.stringify(data, null, 2));
     }
 
     res.json({ received: true });
   }
 );
 
-// =========================================
-// 🧾 CUSTOMER PORTAL
-// =========================================
+// =====================================================
+// 🧾 MANAGE SUBSCRIPTION PORTAL
+// =====================================================
 app.post("/manage-subscription", async (req, res) => {
   try {
     const data = JSON.parse(fs.readFileSync(premiumFile, "utf8"));
@@ -140,21 +148,22 @@ app.post("/manage-subscription", async (req, res) => {
       return res.json({ error: "No subscription found." });
     }
 
-    const session = await stripe.billingPortal.sessions.create({
+    const portal = await stripe.billingPortal.sessions.create({
       customer: data.customerId,
-      return_url: "https://google.com", // you can change this later
+      return_url: "https://eclipse-pdf.com", // your real site later
     });
 
-    res.json({ url: session.url });
+    res.json({ url: portal.url });
   } catch (err) {
-    console.error("❌ Portal error:", err);
+    console.error("❌ Portal error:", err.message);
     res.status(500).json({ error: "Failed to open portal" });
   }
 });
 
-// =========================================
+// =====================================================
 // 🚀 START SERVER
-// =========================================
-app.listen(4242, () =>
-  console.log("🔥 Stripe LIVE server running at http://localhost:4242")
-);
+// =====================================================
+const PORT = process.env.PORT || 4242;
+app.listen(PORT, () => {
+  console.log("🔥 Backend running on port " + PORT);
+});
