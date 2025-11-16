@@ -16,7 +16,7 @@ const premiumFile = path.join(__dirname, "../premium.json");
 
 // DO NOT USE express.json() — it breaks Stripe webhook raw-body
 app.use(cors());
-app.use(express.static(path.join(__dirname, "../web")));
+app.use(express.static(path.join(__dirname, "web")));
 
 // =========================================
 // 🧨 CREATE CHECKOUT SESSION (LIVE SUBSCRIPTION)
