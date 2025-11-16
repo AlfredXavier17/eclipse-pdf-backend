@@ -36,12 +36,16 @@
 <body>
   <h1>🎉 You’re now Premium!</h1>
   <p>Thank you for subscribing to Eclipse PDF Premium.</p>
-  <div class="note">Restart the app to unlock all premium features 💎</div>
+  <div class="note">You can now restart the app to unlock all premium features 💎</div>
 
   <script>
-    // tell local server to mark this device as premium
-    fetch("/mark-premium", { method: "POST" }).catch(() => {});
-    // optional local backup
+    // Call your backend to permanently unlock premium
+    fetch("https://eclipse-pdf-backend.onrender.com/mark-premium", {
+      method: "POST"
+    })
+    .catch(() => {});
+
+    // Optional fallback for the Electron app
     localStorage.setItem("isPremium", "true");
   </script>
 </body>
