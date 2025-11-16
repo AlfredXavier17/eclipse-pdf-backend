@@ -11,52 +11,47 @@ require("dotenv").config();
 
 const app = express();
 
-// 🔐 Stripe secret (TEST for now, from env)
+// 🔐 Stripe secret (TEST MODE)
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-// 💵 YOUR TEST PRICE ID (hard-coded)
+// 🧪 Hard-coded TEST price
 const TEST_PRICE_ID = "price_1STxUHJP4n1rsrKWoGxeHeEc";
 
-// 📁 Where we store premium status on the server
+// 📁 JSON file that stores premium status
 const premiumFile = path.join(__dirname, "premium.json");
 
-// 🔧 Ensure premium.json exists
+// 🟦 Make sure premium.json exists
 if (!fs.existsSync(premiumFile)) {
   fs.writeFileSync(
     premiumFile,
-    JSON.stringify(
-      {
-        isPremium: false,
-        customerId: null,
-        subscriptionId: null,
-        lastPaid: null
-      },
-      null,
-      2
-    )
+    JSON.stringify({
+      isPremium: false,
+      customerId: null,
+      subscriptionId: null,
+      lastPaid: null
+    }, null, 2)
   );
 }
 
-// Basic middleware
+// CORS + static
 app.use(cors());
-app.use(express.static(path.join(__dirname, "web"))); // serves success.html + cancel.html
+app.use(express.static(path.join(__dirname, "web"))); // serves success.html / cancel.html
 
 // =====================================================
-// 🟦 CREATE CHECKOUT SESSION (TEST)
+// 🟦 CREATE CHECKOUT SESSION
 // =====================================================
 app.post("/create-checkout-session", async (req, res) => {
   try {
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
-      payment_method_types: ["card"],
       line_items: [
         {
-          price: TEST_PRICE_ID, // 👈 hard-coded test price
-          quantity: 1,
-        },
+          price: TEST_PRICE_ID,
+          quantity: 1
+        }
       ],
       success_url: "https://eclipse-pdf-backend.onrender.com/success.html",
-      cancel_url: "https://eclipse-pdf-backend.onrender.com/cancel.html",
+      cancel_url: "https://eclipse-pdf-backend.onrender.com/cancel.html"
     });
 
     res.json({ url: session.url });
@@ -67,9 +62,9 @@ app.post("/create-checkout-session", async (req, res) => {
 });
 
 // =====================================================
-// 🟩 MARK PREMIUM (called by success.html)
+// 🟩 User hits this from success.html to store premium
 // =====================================================
-app.post("/mark-premium", (req, res) => {
+app.post("/mark-premium", express.json(), (req, res) => {
   try {
     const data = JSON.parse(fs.readFileSync(premiumFile, "utf8"));
     data.isPremium = true;
@@ -83,7 +78,7 @@ app.post("/mark-premium", (req, res) => {
 });
 
 // =====================================================
-// 📡 ENTITLEMENT CHECK (Electron asks this)
+// 📡 Electron entitlement check
 // =====================================================
 app.get("/entitlement", (req, res) => {
   try {
@@ -95,15 +90,15 @@ app.get("/entitlement", (req, res) => {
 });
 
 // =====================================================
-// ⚡ STRIPE WEBHOOK — keeps premium.json in sync
+// ⚡ STRIPE WEBHOOK
 // =====================================================
 app.post(
   "/webhook",
   bodyParser.raw({ type: "application/json" }),
   (req, res) => {
     const sig = req.headers["stripe-signature"];
-
     let event;
+
     try {
       event = stripe.webhooks.constructEvent(
         req.body,
@@ -115,22 +110,21 @@ app.post(
       return res.status(400).send(`Webhook Error: ${err.message}`);
     }
 
-    // Always read current file
-    let data;
+    // Load file
+    let data = {
+      isPremium: false,
+      customerId: null,
+      subscriptionId: null,
+      lastPaid: null
+    };
+
     try {
       data = JSON.parse(fs.readFileSync(premiumFile, "utf8"));
-    } catch {
-      data = {
-        isPremium: false,
-        customerId: null,
-        subscriptionId: null,
-        lastPaid: null,
-      };
-    }
+    } catch {}
 
+    // 💳 Subscription paid
     if (event.type === "invoice.paid") {
       const invoice = event.data.object;
-      console.log("💎 Subscription payment successful");
 
       data.isPremium = true;
       data.customerId = invoice.customer;
@@ -140,8 +134,8 @@ app.post(
       fs.writeFileSync(premiumFile, JSON.stringify(data, null, 2));
     }
 
+    // ❌ Subscription canceled
     if (event.type === "customer.subscription.deleted") {
-      console.log("🟥 Subscription canceled");
       data.isPremium = false;
       fs.writeFileSync(premiumFile, JSON.stringify(data, null, 2));
     }
@@ -151,9 +145,9 @@ app.post(
 );
 
 // =====================================================
-// 🧾 MANAGE SUBSCRIPTION PORTAL
+// 🧾 Customer portal
 // =====================================================
-app.post("/manage-subscription", async (req, res) => {
+app.post("/manage-subscription", express.json(), async (req, res) => {
   try {
     const data = JSON.parse(fs.readFileSync(premiumFile, "utf8"));
 
@@ -163,7 +157,7 @@ app.post("/manage-subscription", async (req, res) => {
 
     const portal = await stripe.billingPortal.sessions.create({
       customer: data.customerId,
-      return_url: "https://eclipse-pdf.com", // later you can change
+      return_url: "https://eclipse-pdf.com"
     });
 
     res.json({ url: portal.url });
@@ -174,7 +168,7 @@ app.post("/manage-subscription", async (req, res) => {
 });
 
 // =====================================================
-// 🚀 START SERVER
+// 🚀 Start server
 // =====================================================
 const PORT = process.env.PORT || 4242;
 app.listen(PORT, () => {
