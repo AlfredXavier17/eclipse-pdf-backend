@@ -28,7 +28,8 @@ app.post("/create-checkout-session", async (req, res) => {
       payment_method_types: ["card"],
       line_items: [
         {
-          price: "price_1ST9PrJ6zNG9KpDmFEZOcAjk", // LIVE price ID
+          // price: "price_1ST9PrJ6zNG9KpDmFEZOcAjk", // LIVE price ID
+          Price:  "price_1STxUHJP4n1rsrKWoGxeHeEc", /// test price id
           quantity: 1,
         },
       ],
