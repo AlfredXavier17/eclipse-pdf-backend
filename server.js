@@ -11,11 +11,11 @@ require("dotenv").config();
 
 const app = express();
 
-// 🔐 Stripe secret (TEST MODE)
+// 🔐 Stripe secret (LIVE MODE)
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 // 🧪 Hard-coded TEST price
-const TEST_PRICE_ID = "price_1STxUHJP4n1rsrKWoGxeHeEc";
+const LIVE_PRICE_ID = "price_1ST9PrJ6zNG9KpDmFEZOcAjk";
 
 // 📁 JSON file that stores premium status
 const premiumFile = path.join(__dirname, "premium.json");
@@ -46,7 +46,7 @@ app.post("/create-checkout-session", async (req, res) => {
       mode: "subscription",
       line_items: [
         {
-          price: TEST_PRICE_ID,
+          price: LIVE_PRICE_ID,
           quantity: 1
         }
       ],
