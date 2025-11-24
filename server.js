@@ -28,9 +28,9 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 // 💵 Stripe live price ID
 const LIVE_PRICE_ID = "price_1ST9PrJ6zNG9KpDmFEZOcAjk";
 
-// CORS + static web pages
+// Serve static web pages (success.html, cancel.html)
 app.use(cors());
-app.use(express.static(path.join(__dirname, "web"))); // success.html / cancel.html
+app.use(express.static(path.join(__dirname, "web")));
 
 // =====================================================
 // ⭐ Firestore helper: Update user data
@@ -56,11 +56,10 @@ app.post("/create-checkout-session", express.json(), async (req, res) => {
 
     if (!uid) return res.status(400).json({ error: "Missing UID" });
 
-    // Get user doc
     const userData = await getUser(uid);
     let customerId = userData?.customerId;
 
-    // If no Stripe customer → create one
+    // Create customer if not exists
     if (!customerId) {
       const customer = await stripe.customers.create({
         metadata: { uid }
@@ -70,7 +69,6 @@ app.post("/create-checkout-session", express.json(), async (req, res) => {
       await updateUser(uid, { customerId });
     }
 
-    // Create checkout session
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       line_items: [
@@ -82,6 +80,7 @@ app.post("/create-checkout-session", express.json(), async (req, res) => {
     });
 
     res.json({ url: session.url });
+
   } catch (err) {
     console.error("❌ Checkout Error:", err);
     res.status(500).json({ error: "Failed to create checkout session" });
@@ -110,7 +109,7 @@ app.post(
     }
 
     // ==============================
-    // invoice.paid = subscription active
+    // invoice.paid → user becomes PREMIUM
     // ==============================
     if (event.type === "invoice.paid") {
       const invoice = event.data.object;
@@ -126,7 +125,7 @@ app.post(
     }
 
     // ==============================
-    // subscription canceled or expired
+    // subscription canceled → PREMIUM FALSE
     // ==============================
     if (event.type === "customer.subscription.deleted") {
       const subscription = event.data.object;
@@ -165,6 +164,7 @@ app.post("/manage-subscription", express.json(), async (req, res) => {
     });
 
     res.json({ url: portal.url });
+
   } catch (err) {
     console.error("❌ Portal error:", err);
     res.status(500).json({ error: "Failed to open portal" });
@@ -172,7 +172,7 @@ app.post("/manage-subscription", express.json(), async (req, res) => {
 });
 
 // =====================================================
-// ⭐ ENTITLEMENT CHECK (Electron calls this)
+// ⭐ Entitlement (Electron -> Backend)
 // =====================================================
 app.post("/entitlement", express.json(), async (req, res) => {
   try {
@@ -187,6 +187,7 @@ app.post("/entitlement", express.json(), async (req, res) => {
     res.json({
       isPremium: userData?.isPremium === true
     });
+
   } catch (err) {
     console.error("Entitlement error:", err);
     res.json({ isPremium: false });
