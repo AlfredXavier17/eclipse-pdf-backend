@@ -1,5 +1,5 @@
 // =============================================
-//  Eclipse PDF – Stripe + Firestore Backend
+//  Eclipse PDF – Stripe + Firestore Backend (FIXED)
 // =============================================
 const express = require("express");
 const Stripe = require("stripe");
@@ -22,25 +22,31 @@ const db = admin.firestore();
 
 const app = express();
 
-// 🔐 Stripe secret (LIVE MODE)
+// 🔐 Stripe secret
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-// 💵 Stripe LIVE price ID
+// 💵 Price ID
 const LIVE_PRICE_ID = "price_1SWsCtQwQoKcJrPxyPGlOBrA";
 
-// Serve static HTML pages
+// Serve static web pages (success.html, cancel.html)
 app.use(cors());
 app.use(express.static(path.join(__dirname, "web")));
 
 // =====================================================
-// ⭐ Firestore helper: Update user
+// ⭐ Firestore helper: Update user data
 // =====================================================
 async function updateUser(uid, data) {
-  await db.collection("users").doc(uid).set(data, { merge: true });
+  const cleanData = {};
+
+  for (const [key, value] of Object.entries(data)) {
+    cleanData[key] = value === undefined ? null : value;
+  }
+
+  await db.collection("users").doc(uid).set(cleanData, { merge: true });
 }
 
 // =====================================================
-// ⭐ Firestore helper: Get user
+// ⭐ Firestore helper: Get user data
 // =====================================================
 async function getUser(uid) {
   const snap = await db.collection("users").doc(uid).get();
@@ -59,6 +65,7 @@ app.post("/create-checkout-session", express.json(), async (req, res) => {
     const userData = await getUser(uid);
     let customerId = userData?.customerId;
 
+    // Create customer if not exists
     if (!customerId) {
       const customer = await stripe.customers.create({
         metadata: { uid }
@@ -107,7 +114,28 @@ app.post(
       return res.status(400).send(`Webhook Error: ${err.message}`);
     }
 
-    // invoice.paid → Premium TRUE
+    // =====================================================
+    // ✔ checkout.session.completed → ALWAYS HAS subscriptionId
+    // =====================================================
+    if (event.type === "checkout.session.completed") {
+      const session = event.data.object;
+
+      const subscriptionId = session.subscription || null;
+      const customerId = session.customer;
+
+      const customer = await stripe.customers.retrieve(customerId);
+      const uid = customer.metadata.uid;
+
+      await updateUser(uid, {
+        isPremium: true,
+        subscriptionId,
+        lastPaid: Date.now()
+      });
+    }
+
+    // =====================================================
+    // invoice.paid → support renewal payments
+    // =====================================================
     if (event.type === "invoice.paid") {
       const invoice = event.data.object;
 
@@ -116,16 +144,18 @@ app.post(
 
       await updateUser(uid, {
         isPremium: true,
-        subscriptionId: invoice.subscription,
+        subscriptionId: invoice.subscription || null,
         lastPaid: Date.now()
       });
     }
 
-    // subscription cancelled → Premium FALSE
+    // =====================================================
+    // subscription canceled → PREMIUM FALSE
+    // =====================================================
     if (event.type === "customer.subscription.deleted") {
-      const subscription = event.data.object;
+      const sub = event.data.object;
 
-      const customer = await stripe.customers.retrieve(subscription.customer);
+      const customer = await stripe.customers.retrieve(sub.customer);
       const uid = customer.metadata.uid;
 
       await updateUser(uid, {
@@ -139,7 +169,7 @@ app.post(
 );
 
 // =====================================================
-// 🧾 Stripe Billing Portal
+// 🧾 Customer portal
 // =====================================================
 app.post("/manage-subscription", express.json(), async (req, res) => {
   try {
@@ -167,13 +197,15 @@ app.post("/manage-subscription", express.json(), async (req, res) => {
 });
 
 // =====================================================
-// ⭐ Entitlement (Electron → Backend)
+// ⭐ Entitlement (Electron -> Backend)
 // =====================================================
 app.post("/entitlement", express.json(), async (req, res) => {
   try {
     const { uid } = req.body;
 
-    if (!uid) return res.json({ isPremium: false });
+    if (!uid) {
+      return res.json({ isPremium: false });
+    }
 
     const userData = await getUser(uid);
 
