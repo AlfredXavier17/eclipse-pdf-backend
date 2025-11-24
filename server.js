@@ -25,23 +25,22 @@ const app = express();
 // 🔐 Stripe secret (LIVE MODE)
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-// 💵 Stripe live price ID
-// const LIVE_PRICE_ID = "price_1ST9PrJ6zNG9KpDmFEZOcAjk";  /// real
-const LIVE_PRICE_ID = "price_1SWsCtQwQoKcJrPxyPGlOBrA"; 
+// 💵 Stripe LIVE price ID
+const LIVE_PRICE_ID = "price_1SWsCtQwQoKcJrPxyPGlOBrA";
 
-// Serve static web pages (success.html, cancel.html)
+// Serve static HTML pages
 app.use(cors());
 app.use(express.static(path.join(__dirname, "web")));
 
 // =====================================================
-// ⭐ Firestore helper: Update user data
+// ⭐ Firestore helper: Update user
 // =====================================================
 async function updateUser(uid, data) {
   await db.collection("users").doc(uid).set(data, { merge: true });
 }
 
 // =====================================================
-// ⭐ Firestore helper: Get user data
+// ⭐ Firestore helper: Get user
 // =====================================================
 async function getUser(uid) {
   const snap = await db.collection("users").doc(uid).get();
@@ -60,7 +59,6 @@ app.post("/create-checkout-session", express.json(), async (req, res) => {
     const userData = await getUser(uid);
     let customerId = userData?.customerId;
 
-    // Create customer if not exists
     if (!customerId) {
       const customer = await stripe.customers.create({
         metadata: { uid }
@@ -109,9 +107,7 @@ app.post(
       return res.status(400).send(`Webhook Error: ${err.message}`);
     }
 
-    // ==============================
-    // invoice.paid → user becomes PREMIUM
-    // ==============================
+    // invoice.paid → Premium TRUE
     if (event.type === "invoice.paid") {
       const invoice = event.data.object;
 
@@ -125,9 +121,7 @@ app.post(
       });
     }
 
-    // ==============================
-    // subscription canceled → PREMIUM FALSE
-    // ==============================
+    // subscription cancelled → Premium FALSE
     if (event.type === "customer.subscription.deleted") {
       const subscription = event.data.object;
 
@@ -145,7 +139,7 @@ app.post(
 );
 
 // =====================================================
-// 🧾 Customer portal
+// 🧾 Stripe Billing Portal
 // =====================================================
 app.post("/manage-subscription", express.json(), async (req, res) => {
   try {
@@ -173,15 +167,13 @@ app.post("/manage-subscription", express.json(), async (req, res) => {
 });
 
 // =====================================================
-// ⭐ Entitlement (Electron -> Backend)
+// ⭐ Entitlement (Electron → Backend)
 // =====================================================
 app.post("/entitlement", express.json(), async (req, res) => {
   try {
     const { uid } = req.body;
 
-    if (!uid) {
-      return res.json({ isPremium: false });
-    }
+    if (!uid) return res.json({ isPremium: false });
 
     const userData = await getUser(uid);
 
