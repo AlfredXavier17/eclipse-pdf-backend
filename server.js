@@ -18,7 +18,6 @@ admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
 });
 
-
 const db = admin.firestore();
 
 const app = express();
@@ -26,10 +25,10 @@ const app = express();
 // 🔐 Stripe secret (LIVE MODE)
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-// 💵 Stripe price ID
+// 💵 Stripe live price ID
 const LIVE_PRICE_ID = "price_1ST9PrJ6zNG9KpDmFEZOcAjk";
 
-// CORS + static files
+// CORS + static web pages
 app.use(cors());
 app.use(express.static(path.join(__dirname, "web"))); // success.html / cancel.html
 
@@ -57,29 +56,25 @@ app.post("/create-checkout-session", express.json(), async (req, res) => {
 
     if (!uid) return res.status(400).json({ error: "Missing UID" });
 
-    // Get user to see if a Stripe customer already exists
+    // Get user doc
     const userData = await getUser(uid);
-
     let customerId = userData?.customerId;
 
-    // If no customer, create one
+    // If no Stripe customer → create one
     if (!customerId) {
       const customer = await stripe.customers.create({
         metadata: { uid }
       });
 
       customerId = customer.id;
-
       await updateUser(uid, { customerId });
     }
 
+    // Create checkout session
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       line_items: [
-        {
-          price: LIVE_PRICE_ID,
-          quantity: 1
-        }
+        { price: LIVE_PRICE_ID, quantity: 1 }
       ],
       customer: customerId,
       success_url: "https://eclipse-pdf-backend.onrender.com/success.html",
@@ -114,7 +109,9 @@ app.post(
       return res.status(400).send(`Webhook Error: ${err.message}`);
     }
 
-    // invoice.paid → user subscribed
+    // ==============================
+    // invoice.paid = subscription active
+    // ==============================
     if (event.type === "invoice.paid") {
       const invoice = event.data.object;
 
@@ -122,12 +119,15 @@ app.post(
       const uid = customer.metadata.uid;
 
       await updateUser(uid, {
-      isPremium: false,
-      subscriptionId: null
-});
+        isPremium: true,
+        subscriptionId: invoice.subscription,
+        lastPaid: Date.now()
+      });
     }
 
-    // subscription canceled
+    // ==============================
+    // subscription canceled or expired
+    // ==============================
     if (event.type === "customer.subscription.deleted") {
       const subscription = event.data.object;
 
@@ -135,7 +135,8 @@ app.post(
       const uid = customer.metadata.uid;
 
       await updateUser(uid, {
-        isPremium: false
+        isPremium: false,
+        subscriptionId: null
       });
     }
 
@@ -170,11 +171,8 @@ app.post("/manage-subscription", express.json(), async (req, res) => {
   }
 });
 
-
-
-
 // =====================================================
-// ⭐ ENTITLEMENT CHECK (Electron → Backend → Firestore)
+// ⭐ ENTITLEMENT CHECK (Electron calls this)
 // =====================================================
 app.post("/entitlement", express.json(), async (req, res) => {
   try {
@@ -194,7 +192,6 @@ app.post("/entitlement", express.json(), async (req, res) => {
     res.json({ isPremium: false });
   }
 });
-
 
 // =====================================================
 // 🚀 Start server
