@@ -26,7 +26,7 @@ const app = express();
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 // 💵 Price ID
-const LIVE_PRICE_ID = "price_1SWsCtQwQoKcJrPxyPGlOBrA";
+const LIVE_PRICE_ID = "price_1ST9PrJ6zNG9KpDmFEZOcAjk";
 
 // Serve static web pages (success.html, cancel.html)
 app.use(cors());
