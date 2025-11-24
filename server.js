@@ -1,47 +1,77 @@
 // =============================================
-//  Eclipse PDF – Stripe Backend (TEST MODE)
+//  Eclipse PDF – Stripe + Firestore Backend
 // =============================================
 const express = require("express");
 const Stripe = require("stripe");
 const cors = require("cors");
 const path = require("path");
-const fs = require("fs");
 const bodyParser = require("body-parser");
 require("dotenv").config();
+
+// =========================
+// 🔥 Firebase Admin Setup
+// =========================
+const admin = require("firebase-admin");
+const serviceAccount = require("./serviceAccountKey.json");
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
+});
+
+const db = admin.firestore();
 
 const app = express();
 
 // 🔐 Stripe secret (LIVE MODE)
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-// 🧪 Hard-coded TEST price
+// 💵 Stripe price ID
 const LIVE_PRICE_ID = "price_1ST9PrJ6zNG9KpDmFEZOcAjk";
 
-// 📁 JSON file that stores premium status
-const premiumFile = path.join(__dirname, "premium.json");
+// CORS + static files
+app.use(cors());
+app.use(express.static(path.join(__dirname, "web"))); // success.html / cancel.html
 
-// 🟦 Make sure premium.json exists
-if (!fs.existsSync(premiumFile)) {
-  fs.writeFileSync(
-    premiumFile,
-    JSON.stringify({
-      isPremium: false,
-      customerId: null,
-      subscriptionId: null,
-      lastPaid: null
-    }, null, 2)
-  );
+// =====================================================
+// ⭐ Firestore helper: Update user data
+// =====================================================
+async function updateUser(uid, data) {
+  await db.collection("users").doc(uid).set(data, { merge: true });
 }
 
-// CORS + static
-app.use(cors());
-app.use(express.static(path.join(__dirname, "web"))); // serves success.html / cancel.html
+// =====================================================
+// ⭐ Firestore helper: Get user data
+// =====================================================
+async function getUser(uid) {
+  const snap = await db.collection("users").doc(uid).get();
+  return snap.exists ? snap.data() : null;
+}
 
 // =====================================================
 // 🟦 CREATE CHECKOUT SESSION
 // =====================================================
-app.post("/create-checkout-session", async (req, res) => {
+app.post("/create-checkout-session", express.json(), async (req, res) => {
   try {
+    const { uid } = req.body;
+
+    if (!uid) return res.status(400).json({ error: "Missing UID" });
+
+    // Get user to see if a Stripe customer already exists
+    const userData = await getUser(uid);
+
+    let customerId = userData?.customerId;
+
+    // If no customer, create one
+    if (!customerId) {
+      const customer = await stripe.customers.create({
+        metadata: { uid }
+      });
+
+      customerId = customer.id;
+
+      await updateUser(uid, { customerId });
+    }
+
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       line_items: [
@@ -50,6 +80,7 @@ app.post("/create-checkout-session", async (req, res) => {
           quantity: 1
         }
       ],
+      customer: customerId,
       success_url: "https://eclipse-pdf-backend.onrender.com/success.html",
       cancel_url: "https://eclipse-pdf-backend.onrender.com/cancel.html"
     });
@@ -62,43 +93,15 @@ app.post("/create-checkout-session", async (req, res) => {
 });
 
 // =====================================================
-// 🟩 User hits this from success.html to store premium
-// =====================================================
-app.post("/mark-premium", express.json(), (req, res) => {
-  try {
-    const data = JSON.parse(fs.readFileSync(premiumFile, "utf8"));
-    data.isPremium = true;
-    data.lastPaid = Date.now();
-    fs.writeFileSync(premiumFile, JSON.stringify(data, null, 2));
-    res.json({ ok: true });
-  } catch (err) {
-    console.error("❌ mark-premium Error:", err);
-    res.status(500).json({ ok: false });
-  }
-});
-
-// =====================================================
-// 📡 Electron entitlement check
-// =====================================================
-app.get("/entitlement", (req, res) => {
-  try {
-    const data = JSON.parse(fs.readFileSync(premiumFile, "utf8"));
-    res.json({ isPremium: data.isPremium === true });
-  } catch (err) {
-    res.json({ isPremium: false });
-  }
-});
-
-// =====================================================
-// ⚡ STRIPE WEBHOOK
+// ⚡ STRIPE WEBHOOK → UPDATE FIRESTORE
 // =====================================================
 app.post(
   "/webhook",
   bodyParser.raw({ type: "application/json" }),
-  (req, res) => {
+  async (req, res) => {
     const sig = req.headers["stripe-signature"];
-    let event;
 
+    let event;
     try {
       event = stripe.webhooks.constructEvent(
         req.body,
@@ -110,34 +113,30 @@ app.post(
       return res.status(400).send(`Webhook Error: ${err.message}`);
     }
 
-    // Load file
-    let data = {
-      isPremium: false,
-      customerId: null,
-      subscriptionId: null,
-      lastPaid: null
-    };
-
-    try {
-      data = JSON.parse(fs.readFileSync(premiumFile, "utf8"));
-    } catch {}
-
-    // 💳 Subscription paid
+    // invoice.paid → user subscribed
     if (event.type === "invoice.paid") {
       const invoice = event.data.object;
 
-      data.isPremium = true;
-      data.customerId = invoice.customer;
-      data.subscriptionId = invoice.subscription;
-      data.lastPaid = Date.now();
+      const customer = await stripe.customers.retrieve(invoice.customer);
+      const uid = customer.metadata.uid;
 
-      fs.writeFileSync(premiumFile, JSON.stringify(data, null, 2));
+      await updateUser(uid, {
+        isPremium: true,
+        subscriptionId: invoice.subscription,
+        lastPaid: Date.now()
+      });
     }
 
-    // ❌ Subscription canceled
+    // subscription canceled
     if (event.type === "customer.subscription.deleted") {
-      data.isPremium = false;
-      fs.writeFileSync(premiumFile, JSON.stringify(data, null, 2));
+      const subscription = event.data.object;
+
+      const customer = await stripe.customers.retrieve(subscription.customer);
+      const uid = customer.metadata.uid;
+
+      await updateUser(uid, {
+        isPremium: false
+      });
     }
 
     res.json({ received: true });
@@ -149,14 +148,18 @@ app.post(
 // =====================================================
 app.post("/manage-subscription", express.json(), async (req, res) => {
   try {
-    const data = JSON.parse(fs.readFileSync(premiumFile, "utf8"));
+    const { uid } = req.body;
 
-    if (!data.customerId) {
-      return res.json({ error: "No subscription found." });
+    if (!uid) return res.json({ error: "Missing UID" });
+
+    const userData = await getUser(uid);
+
+    if (!userData?.customerId) {
+      return res.json({ error: "No customer found." });
     }
 
     const portal = await stripe.billingPortal.sessions.create({
-      customer: data.customerId,
+      customer: userData.customerId,
       return_url: "https://eclipse-pdf.com"
     });
 
@@ -166,6 +169,32 @@ app.post("/manage-subscription", express.json(), async (req, res) => {
     res.status(500).json({ error: "Failed to open portal" });
   }
 });
+
+
+
+
+// =====================================================
+// ⭐ ENTITLEMENT CHECK (Electron → Backend → Firestore)
+// =====================================================
+app.post("/entitlement", express.json(), async (req, res) => {
+  try {
+    const { uid } = req.body;
+
+    if (!uid) {
+      return res.json({ isPremium: false });
+    }
+
+    const userData = await getUser(uid);
+
+    res.json({
+      isPremium: userData?.isPremium === true
+    });
+  } catch (err) {
+    console.error("Entitlement error:", err);
+    res.json({ isPremium: false });
+  }
+});
+
 
 // =====================================================
 // 🚀 Start server
