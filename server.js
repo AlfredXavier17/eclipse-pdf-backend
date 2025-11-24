@@ -122,10 +122,9 @@ app.post(
       const uid = customer.metadata.uid;
 
       await updateUser(uid, {
-        isPremium: true,
-        subscriptionId: invoice.subscription,
-        lastPaid: Date.now()
-      });
+      isPremium: false,
+      subscriptionId: null
+});
     }
 
     // subscription canceled
