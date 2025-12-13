@@ -1,5 +1,5 @@
 // =============================================
-//  Eclipse PDF – Stripe + Firestore Backend (FIXED)
+//  Eclipse PDF – Stripe + Firestore Backend (FINAL)
 // =============================================
 const express = require("express");
 const Stripe = require("stripe");
@@ -19,90 +19,126 @@ admin.initializeApp({
 });
 
 const db = admin.firestore();
-
 const app = express();
 
-// 🔐 Stripe secret
+// =========================
+// 💳 Stripe Setup
+// =========================
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
-
-// 💵 Price ID
 const LIVE_PRICE_ID = "price_1ST9PrJ6zNG9KpDmFEZOcAjk";
 
-// Serve static web pages (success.html, cancel.html)
+// =========================
+// Middleware
+// =========================
 app.use(cors());
-app.use(express.static(path.join(__dirname, "web")));
+app.use(express.json());
+app.use(express.static(path.join(__dirname, "web"))); // success.html / cancel.html
 
 // =====================================================
-// ⭐ Firestore helper: Update user data
+// 🧠 Firestore helpers
 // =====================================================
 async function updateUser(uid, data) {
-  const cleanData = {};
-
-  for (const [key, value] of Object.entries(data)) {
-    cleanData[key] = value === undefined ? null : value;
+  const clean = {};
+  for (const [k, v] of Object.entries(data)) {
+    clean[k] = v === undefined ? null : v;
   }
-
-  await db.collection("users").doc(uid).set(cleanData, { merge: true });
+  await db.collection("users").doc(uid).set(clean, { merge: true });
 }
 
-// =====================================================
-// ⭐ Firestore helper: Get user data
-// =====================================================
 async function getUser(uid) {
   const snap = await db.collection("users").doc(uid).get();
   return snap.exists ? snap.data() : null;
 }
 
 // =====================================================
+// ✅ SYNC USER (CALLED AFTER GOOGLE SIGN-IN)
+// =====================================================
+app.post("/sync-user", async (req, res) => {
+  try {
+    const { uid, email, displayName } = req.body;
+    if (!uid || !email) {
+      return res.status(400).json({ error: "Missing uid or email" });
+    }
+
+    await updateUser(uid, {
+      uid,
+      email,
+      displayName: displayName || email.split("@")[0],
+      isPremium: false,
+      createdAt: Date.now()
+    });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("❌ sync-user error:", err);
+    res.status(500).json({ error: "Failed to sync user" });
+  }
+});
+
+// =====================================================
+// ⏱️ SYNC USAGE (TRIAL TIME)
+// =====================================================
+app.post("/sync-usage", async (req, res) => {
+  try {
+    const { uid, dailySecondsUsed, date } = req.body;
+    if (!uid) return res.json({ success: false });
+
+    await updateUser(uid, {
+      dailySecondsUsed,
+      lastUsageDate: date
+    });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("❌ sync-usage error:", err);
+    res.json({ success: false });
+  }
+});
+
+// =====================================================
 // 🟦 CREATE CHECKOUT SESSION
 // =====================================================
-app.post("/create-checkout-session", express.json(), async (req, res) => {
+app.post("/create-checkout-session", async (req, res) => {
   try {
     const { uid } = req.body;
-
     if (!uid) return res.status(400).json({ error: "Missing UID" });
 
-    const userData = await getUser(uid);
-    let customerId = userData?.customerId;
+    const user = await getUser(uid);
+    let customerId = user?.customerId;
 
-    // Create customer if not exists
     if (!customerId) {
       const customer = await stripe.customers.create({
         metadata: { uid }
       });
-
       customerId = customer.id;
       await updateUser(uid, { customerId });
     }
 
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
-      line_items: [
-        { price: LIVE_PRICE_ID, quantity: 1 }
-      ],
       customer: customerId,
+      line_items: [{ price: LIVE_PRICE_ID, quantity: 1 }],
       success_url: "https://eclipse-pdf-backend.onrender.com/success.html",
       cancel_url: "https://eclipse-pdf-backend.onrender.com/cancel.html"
     });
 
     res.json({ url: session.url });
-
   } catch (err) {
-    console.error("❌ Checkout Error:", err);
-    res.status(500).json({ error: "Failed to create checkout session" });
+    console.error("❌ checkout error:", err);
+    res.status(500).json({ error: "Checkout failed" });
   }
 });
 
 // =====================================================
-// ⚡ STRIPE WEBHOOK → UPDATE FIRESTORE
+// ⚡ STRIPE WEBHOOK
 // =====================================================
 app.post(
   "/webhook",
   bodyParser.raw({ type: "application/json" }),
   async (req, res) => {
     const sig = req.headers["stripe-signature"];
-
     let event;
+
     try {
       event = stripe.webhooks.constructEvent(
         req.body,
@@ -110,51 +146,39 @@ app.post(
         process.env.STRIPE_WEBHOOK_SECRET
       );
     } catch (err) {
-      console.error("❌ Webhook signature failed:", err.message);
-      return res.status(400).send(`Webhook Error: ${err.message}`);
+      console.error("❌ Webhook signature error:", err.message);
+      return res.status(400).send("Webhook error");
     }
 
-    // =====================================================
-    // ✔ checkout.session.completed → ALWAYS HAS subscriptionId
-    // =====================================================
+    // ✅ Payment completed
     if (event.type === "checkout.session.completed") {
       const session = event.data.object;
-
-      const subscriptionId = session.subscription || null;
-      const customerId = session.customer;
-
-      const customer = await stripe.customers.retrieve(customerId);
+      const customer = await stripe.customers.retrieve(session.customer);
       const uid = customer.metadata.uid;
 
       await updateUser(uid, {
         isPremium: true,
-        subscriptionId,
+        subscriptionId: session.subscription,
         lastPaid: Date.now()
       });
     }
 
-    // =====================================================
-    // invoice.paid → support renewal payments
-    // =====================================================
+    // 🔁 Renewal
     if (event.type === "invoice.paid") {
       const invoice = event.data.object;
-
       const customer = await stripe.customers.retrieve(invoice.customer);
       const uid = customer.metadata.uid;
 
       await updateUser(uid, {
         isPremium: true,
-        subscriptionId: invoice.subscription || null,
+        subscriptionId: invoice.subscription,
         lastPaid: Date.now()
       });
     }
 
-    // =====================================================
-    // subscription canceled → PREMIUM FALSE
-    // =====================================================
+    // ❌ Canceled
     if (event.type === "customer.subscription.deleted") {
       const sub = event.data.object;
-
       const customer = await stripe.customers.retrieve(sub.customer);
       const uid = customer.metadata.uid;
 
@@ -169,52 +193,38 @@ app.post(
 );
 
 // =====================================================
-// 🧾 Customer portal
+// 🧾 CUSTOMER PORTAL
 // =====================================================
-app.post("/manage-subscription", express.json(), async (req, res) => {
+app.post("/manage-subscription", async (req, res) => {
   try {
     const { uid } = req.body;
-
-    if (!uid) return res.json({ error: "Missing UID" });
-
-    const userData = await getUser(uid);
-
-    if (!userData?.customerId) {
-      return res.json({ error: "No customer found." });
-    }
+    const user = await getUser(uid);
+    if (!user?.customerId) return res.json({ error: "No customer" });
 
     const portal = await stripe.billingPortal.sessions.create({
-      customer: userData.customerId,
+      customer: user.customerId,
       return_url: "https://eclipse-pdf.com"
     });
 
     res.json({ url: portal.url });
-
   } catch (err) {
-    console.error("❌ Portal error:", err);
-    res.status(500).json({ error: "Failed to open portal" });
+    console.error("❌ portal error:", err);
+    res.status(500).json({ error: "Portal failed" });
   }
 });
 
 // =====================================================
-// ⭐ Entitlement (Electron -> Backend)
+// ⭐ ENTITLEMENT CHECK
 // =====================================================
-app.post("/entitlement", express.json(), async (req, res) => {
+app.post("/entitlement", async (req, res) => {
   try {
     const { uid } = req.body;
-
-    if (!uid) {
-      return res.json({ isPremium: false });
-    }
-
-    const userData = await getUser(uid);
+    const user = uid ? await getUser(uid) : null;
 
     res.json({
-      isPremium: userData?.isPremium === true
+      isPremium: user?.isPremium === true
     });
-
-  } catch (err) {
-    console.error("Entitlement error:", err);
+  } catch {
     res.json({ isPremium: false });
   }
 });
