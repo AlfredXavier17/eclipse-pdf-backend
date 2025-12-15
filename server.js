@@ -1,5 +1,5 @@
 // =============================================
-//  Eclipse PDF – Stripe + Firestore Backend (FINAL)
+//  Eclipse PDF – Stripe + Firestore Backend (FINAL + PATCHED)
 // =============================================
 const express = require("express");
 const Stripe = require("stripe");
@@ -28,10 +28,78 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const LIVE_PRICE_ID = "price_1ST9PrJ6zNG9KpDmFEZOcAjk";
 
 // =========================
-// Middleware
+// Middleware (patch for webhook)
 // =========================
 app.use(cors());
-app.use(express.json());
+
+// 🔥 Webhook must come BEFORE json parser
+app.post(
+  "/webhook",
+  bodyParser.raw({ type: "application/json" }),
+  async (req, res) => {
+    const sig = req.headers["stripe-signature"];
+    let event;
+
+    try {
+      event = stripe.webhooks.constructEvent(
+        req.body,
+        sig,
+        process.env.STRIPE_WEBHOOK_SECRET
+      );
+    } catch (err) {
+      console.error("❌ Webhook signature error:", err.message);
+      return res.status(400).send("Webhook error");
+    }
+
+    try {
+      // ✅ Payment completed
+      if (event.type === "checkout.session.completed") {
+        const session = event.data.object;
+        const customer = await stripe.customers.retrieve(session.customer);
+        const uid = customer.metadata.uid;
+
+        await updateUser(uid, {
+          isPremium: true,
+          subscriptionId: session.subscription,
+          lastPaid: Date.now()
+        });
+      }
+
+      // 🔁 Renewal
+      if (event.type === "invoice.paid") {
+        const invoice = event.data.object;
+        const customer = await stripe.customers.retrieve(invoice.customer);
+        const uid = customer.metadata.uid;
+
+        await updateUser(uid, {
+          isPremium: true,
+          subscriptionId: invoice.subscription,
+          lastPaid: Date.now()
+        });
+      }
+
+      // ❌ Canceled
+      if (event.type === "customer.subscription.deleted") {
+        const sub = event.data.object;
+        const customer = await stripe.customers.retrieve(sub.customer);
+        const uid = customer.metadata.uid;
+
+        await updateUser(uid, {
+          isPremium: false,
+          subscriptionId: null
+        });
+      }
+
+      res.json({ received: true });
+    } catch (err) {
+      console.error("❌ Stripe webhook processing error:", err.message);
+      res.status(500).send("Webhook handler failed");
+    }
+  }
+);
+
+// Normal parsers for everything else (AFTER webhook setup)
+app.use(bodyParser.json());
 app.use(express.static(path.join(__dirname, "web"))); // success.html / cancel.html
 
 // =====================================================
@@ -128,69 +196,6 @@ app.post("/create-checkout-session", async (req, res) => {
     res.status(500).json({ error: "Checkout failed" });
   }
 });
-
-// =====================================================
-// ⚡ STRIPE WEBHOOK
-// =====================================================
-app.post(
-  "/webhook",
-  bodyParser.raw({ type: "application/json" }),
-  async (req, res) => {
-    const sig = req.headers["stripe-signature"];
-    let event;
-
-    try {
-      event = stripe.webhooks.constructEvent(
-        req.body,
-        sig,
-        process.env.STRIPE_WEBHOOK_SECRET
-      );
-    } catch (err) {
-      console.error("❌ Webhook signature error:", err.message);
-      return res.status(400).send("Webhook error");
-    }
-
-    // ✅ Payment completed
-    if (event.type === "checkout.session.completed") {
-      const session = event.data.object;
-      const customer = await stripe.customers.retrieve(session.customer);
-      const uid = customer.metadata.uid;
-
-      await updateUser(uid, {
-        isPremium: true,
-        subscriptionId: session.subscription,
-        lastPaid: Date.now()
-      });
-    }
-
-    // 🔁 Renewal
-    if (event.type === "invoice.paid") {
-      const invoice = event.data.object;
-      const customer = await stripe.customers.retrieve(invoice.customer);
-      const uid = customer.metadata.uid;
-
-      await updateUser(uid, {
-        isPremium: true,
-        subscriptionId: invoice.subscription,
-        lastPaid: Date.now()
-      });
-    }
-
-    // ❌ Canceled
-    if (event.type === "customer.subscription.deleted") {
-      const sub = event.data.object;
-      const customer = await stripe.customers.retrieve(sub.customer);
-      const uid = customer.metadata.uid;
-
-      await updateUser(uid, {
-        isPremium: false,
-        subscriptionId: null
-      });
-    }
-
-    res.json({ received: true });
-  }
-);
 
 // =====================================================
 // 🧾 CUSTOMER PORTAL
