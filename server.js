@@ -52,7 +52,6 @@ app.post(
     }
 
     try {
-      // ✅ Payment completed
       if (event.type === "checkout.session.completed") {
         const session = event.data.object;
         const customer = await stripe.customers.retrieve(session.customer);
@@ -65,7 +64,6 @@ app.post(
         });
       }
 
-      // 🔁 Renewal
       if (event.type === "invoice.paid") {
         const invoice = event.data.object;
         const customer = await stripe.customers.retrieve(invoice.customer);
@@ -78,7 +76,6 @@ app.post(
         });
       }
 
-      // ❌ Canceled
       if (event.type === "customer.subscription.deleted") {
         const sub = event.data.object;
         const customer = await stripe.customers.retrieve(sub.customer);
@@ -98,9 +95,9 @@ app.post(
   }
 );
 
-// Normal parsers for everything else (AFTER webhook setup)
+// Normal parsers AFTER webhook setup
 app.use(bodyParser.json());
-app.use(express.static(path.join(__dirname, "web"))); // success.html / cancel.html
+app.use(express.static(path.join(__dirname, "web")));
 
 // =====================================================
 // 🧠 Firestore helpers
@@ -119,32 +116,51 @@ async function getUser(uid) {
 }
 
 // =====================================================
-// ✅ SYNC USER (CALLED AFTER GOOGLE SIGN-IN)
+// ✅ PATCHED SYNC USER
 // =====================================================
 app.post("/sync-user", async (req, res) => {
   try {
     const { uid, email, displayName } = req.body;
-    if (!uid || !email) {
-      return res.status(400).json({ error: "Missing uid or email" });
-    }
+    if (!uid || !email) return res.status(400).json({ error: "Missing fields" });
 
-    await updateUser(uid, {
-      uid,
-      email,
-      displayName: displayName || email.split("@")[0],
-      isPremium: false,
-      createdAt: Date.now()
-    });
+    const docRef = db.collection("users").doc(uid);
+    const existingDoc = await docRef.get();
+
+    if (existingDoc.exists) {
+      await docRef.set(
+        {
+          displayName,
+          email,
+          lastLogin: Date.now()
+        },
+        { merge: true } // ✅ Prevents overwrite of isPremium and more
+      );
+    } else {
+      await docRef.set({
+        uid,
+        email,
+        displayName,
+        isPremium: false,
+        dailySecondsUsed: 0,
+        lastUsageDate: getTodayDate(),
+        createdAt: Date.now()
+      });
+    }
 
     res.json({ success: true });
   } catch (err) {
     console.error("❌ sync-user error:", err);
-    res.status(500).json({ error: "Failed to sync user" });
+    res.status(500).json({ error: "Internal error" });
   }
 });
 
+function getTodayDate() {
+  const now = new Date();
+  return now.toISOString().split("T")[0]; // e.g. "2025-12-15"
+}
+
 // =====================================================
-// ⏱️ SYNC USAGE (TRIAL TIME)
+// ⏱️ SYNC USAGE
 // =====================================================
 app.post("/sync-usage", async (req, res) => {
   try {
@@ -164,7 +180,7 @@ app.post("/sync-usage", async (req, res) => {
 });
 
 // =====================================================
-// 🟦 CREATE CHECKOUT SESSION
+// 🟦 CHECKOUT SESSION
 // =====================================================
 app.post("/create-checkout-session", async (req, res) => {
   try {
@@ -235,7 +251,7 @@ app.post("/entitlement", async (req, res) => {
 });
 
 // =====================================================
-// 🚀 Start server
+// 🚀 START SERVER
 // =====================================================
 const PORT = process.env.PORT || 4242;
 app.listen(PORT, () => {
